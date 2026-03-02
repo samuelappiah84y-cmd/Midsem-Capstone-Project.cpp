@@ -6,13 +6,14 @@
 #include <map>
 #include <iomanip>
 #include <algorithm>
+#include <filesystem>  // C++17 directory iteration
 #include <direct.h>     // Windows: _mkdir
 #include <sys/stat.h>   // for directory check
 
 using namespace std;
 
 // ────────────────────────────────────────────────
-// Simple structure for one attendance record
+//      Attendance record
 // ────────────────────────────────────────────────
 struct Attendance {
     string indexNumber;
@@ -20,7 +21,7 @@ struct Attendance {
 };
 
 // ────────────────────────────────────────────────
-// One lecture session
+//      Lecture session
 // ────────────────────────────────────────────────
 class LectureSession {
 public:
@@ -37,7 +38,8 @@ public:
         replace(fname.begin(), fname.end(), ':', '-');
         return fname;
     }
-
+    
+    // NOTE: viewAllSessions should be a free function, not a member method.
     void save() const {
         ofstream file(getFilename());
         if (!file.is_open()) {
@@ -81,7 +83,7 @@ public:
     }
 
     void mark(const string& idx, char stat) {
-        // normalize input
+        // normalize status to uppercase
         stat = toupper(stat);
 
         if (stat != 'P' && stat != 'A' && stat != 'L') {
@@ -89,7 +91,7 @@ public:
             return;
         }
 
-        // update if exists
+        // update existing
         for (auto& r : records) {
             if (r.indexNumber == idx) {
                 r.status = stat;
@@ -159,6 +161,25 @@ bool directoryExists(const string& dir) {
 void initDirectories() {
     if (!directoryExists("data"))        _mkdir("data");
     if (!directoryExists(SESSION_DIR))   _mkdir(SESSION_DIR.c_str());
+}
+
+// list all session files in the sessions directory
+void viewAllSessions() {
+    namespace fs = std::filesystem;
+    if (!directoryExists(SESSION_DIR)) {
+        cout << "No sessions directory found.\n";
+        return;
+    }
+    cout << "Available sessions:\n";
+    try {
+        for (const auto& entry : fs::directory_iterator(SESSION_DIR)) {
+            if (entry.is_regular_file()) {
+                cout << "  " << entry.path().filename().string() << "\n";
+            }
+        }
+    } catch (const fs::filesystem_error &e) {
+        cout << "Error reading sessions directory: " << e.what() << "\n";
+    }
 }
 
 void loadStudents() {
@@ -350,6 +371,9 @@ void viewSessionSummary() {
 // ────────────────────────────────────────────────
 // Main menu
 // ────────────────────────────────────────────────
+// forward declaration for CSV export
+bool exportSessionToCSV();
+
 int main() {
     initDirectories();
     loadStudents();
@@ -364,6 +388,8 @@ int main() {
         cout << "5. Mark / update attendance\n";
         cout << "6. View attendance list for session\n";
         cout << "7. View attendance summary for session\n";
+        cout << "8. View all sessions\n";
+        cout << "9. Export session to CSV\n";
         cout << "0. Exit\n";
         cout << "Choice: ";
         cin >> choice;
@@ -377,6 +403,8 @@ int main() {
             case 5: markAttendanceMenu(); break;
             case 6: viewSessionList(); break;
             case 7: viewSessionSummary(); break;
+            case 8: viewAllSessions(); break;
+            case 9: exportSessionToCSV(); break;
             case 0: cout << "Goodbye.\n"; break;
             default: cout << "Invalid choice.\n";
         }
@@ -384,4 +412,54 @@ int main() {
 
     saveStudents();
     return 0;
+
+}
+
+// Export a session into a spreadsheet-friendly CSV file
+bool exportSessionToCSV() {
+    string filename;
+    cout << "Enter session filename (without path, e.g. EEE227_2025-10-15_09-00.txt): ";
+    getline(cin, filename);
+
+    string fullpath = SESSION_DIR + filename;
+
+    LectureSession sess;
+    if (!sess.load(fullpath)) {
+        cout << "Cannot open session file.\n";
+        return false;
+    }
+
+    string outname;
+    cout << "Enter output CSV filename (e.g. EEE227_2025-10-15_09-00.csv): ";
+    getline(cin, outname);
+    if (outname.empty()) {
+        cout << "Output filename cannot be empty.\n";
+        return false;
+    }
+
+    ofstream csv(outname);
+    if (!csv.is_open()) {
+        cout << "Cannot create output CSV file.\n";
+        return false;
+    }
+
+    // Header row
+    csv << "CourseCode,Date,StartTime,Duration,Index,Name,Status\n";
+
+    // Build map of index -> status for quick lookup
+    map<string, char> attMap;
+    for (const auto& r : sess.records) attMap[r.indexNumber] = r.status;
+
+    // For each registered student, write a row (keeps order and includes names)
+    for (const string& idx : studentIndexes) {
+        char st = (attMap.find(idx) != attMap.end()) ? attMap[idx] : '-';
+        // Escape any commas in names by wrapping in quotes if needed
+        string name = studentNames.count(idx) ? studentNames[idx] : "";
+        if (name.find(',') != string::npos) name = '"' + name + '"';
+        csv << sess.courseCode << "," << sess.date << "," << sess.startTime << "," << sess.durationHours << "," << idx << "," << name << "," << st << "\n";
+    }
+
+    csv.close();
+    cout << "Exported to " << outname << "\n";
+    return true;
 }
